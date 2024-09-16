@@ -37,4 +37,5 @@ clean:
 run: oss
 	./oss
 
+# Trying to make this a habit
 .PHONY: all clean run
