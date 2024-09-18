@@ -48,7 +48,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // Print the parsed values for debugging (can be removed later)
+    // Print the parsed values for debugging
     printf("Number of processes: %d\n", num_processes);
     printf("Number of simultaneous processes: %d\n", num_simultaneous);
     printf("Time limit for child processes: %d seconds\n", time_limit);
@@ -76,10 +76,14 @@ int main(int argc, char *argv[]) {
 
     // Launching child processes
     for (int i = 0; i < num_processes; i++) {
-        if (active_processes >= num_simultaneous) {
-            // Wait for any child process to finish before launching another
-            wait(NULL);
-            active_processes--;
+        // Check for completed child processes without blocking
+        while (active_processes >= num_simultaneous) {
+            pid_t pid = waitpid(-1, NULL, WNOHANG);
+            if (pid > 0) {
+                active_processes--;
+                printf("OSS: Process %d finished\n", pid);
+            }
+            usleep(1000); // Give some time to prevent busy waiting
         }
 
         pid_t pid = fork();
@@ -93,7 +97,7 @@ int main(int argc, char *argv[]) {
             exit(1);
         } else {
             // Parent process: Output and increment active process count
-            printf("OSS: Forked worker process with PID %d\n", pid);
+            printf("OSS: Forked worker process with PID %d at clock: %d seconds, %d nanoseconds\n", pid, shm_clock[0], shm_clock[1]);
             active_processes++;
         }
 
@@ -101,10 +105,13 @@ int main(int argc, char *argv[]) {
         usleep(launch_interval * 1000); // Convert milliseconds to microseconds
     }
 
-    // Wait for all child processes to complete
+    // Wait for all remaining child processes to complete
     while (active_processes > 0) {
-        wait(NULL);
-        active_processes--;
+        pid_t pid = waitpid(-1, NULL, 0);
+        if (pid > 0) {
+            active_processes--;
+            printf("OSS: Process %d finished\n", pid);
+        }
     }
 
     // Detach and destroy shared memory
