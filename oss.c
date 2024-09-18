@@ -12,6 +12,16 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
+// Struct for process table entries
+typedef struct {
+    pid_t pid;
+    int start_seconds;
+    int start_nanoseconds;
+    int end_seconds;
+    int end_nanoseconds;
+    int status;
+} ProcessTableEntry;
+
 // Function prototypes
 void print_usage(const char *program_name);
 
@@ -71,21 +81,35 @@ int main(int argc, char *argv[]) {
     shm_clock[0] = 0; // Seconds
     shm_clock[1] = 0; // Nanoseconds
 
+    // Process table setup
+    ProcessTableEntry process_table[num_processes];
+
     // Process management variables
     int active_processes = 0; // Tracks the number of active child processes
+    pid_t finished_pid;
 
     // Launching child processes
     for (int i = 0; i < num_processes; i++) {
-        // Check for completed child processes without blocking
-        while (active_processes >= num_simultaneous) {
-            pid_t pid = waitpid(-1, NULL, WNOHANG);
-            if (pid > 0) {
-                active_processes--;
-                printf("OSS: Process %d finished\n", pid);
+        if (active_processes >= num_simultaneous) {
+            // Wait for any child process to finish before launching another
+            finished_pid = wait(NULL);
+            active_processes--;
+
+            // Capture end time in the process table
+            for (int j = 0; j < num_processes; j++) {
+                if (process_table[j].pid == finished_pid) {
+                    process_table[j].end_seconds = shm_clock[0];  // Record seconds
+                    process_table[j].end_nanoseconds = shm_clock[1];  // Record nanoseconds
+                    process_table[j].status = 1;  // Mark as completed
+
+                    printf("OSS: Process %d finished at clock: %d seconds, %d nanoseconds\n",
+                           finished_pid, process_table[j].end_seconds, process_table[j].end_nanoseconds);
+                    break;
+                }
             }
-            usleep(1000); // Give some time to prevent busy waiting
         }
 
+        // Fork a new process
         pid_t pid = fork();
         if (pid < 0) {
             perror("Fork failed");
@@ -96,8 +120,14 @@ int main(int argc, char *argv[]) {
             perror("execl failed");
             exit(1);
         } else {
-            // Parent process: Output and increment active process count
-            printf("OSS: Forked worker process with PID %d at clock: %d seconds, %d nanoseconds\n", pid, shm_clock[0], shm_clock[1]);
+            // Parent process: Record start time and increment active process count
+            process_table[i].pid = pid;
+            process_table[i].start_seconds = shm_clock[0];
+            process_table[i].start_nanoseconds = shm_clock[1];
+            process_table[i].status = 0; // Mark as in progress
+
+            printf("OSS: Forked worker process with PID %d at clock: %d seconds, %d nanoseconds\n",
+                   pid, process_table[i].start_seconds, process_table[i].start_nanoseconds);
             active_processes++;
         }
 
@@ -105,13 +135,35 @@ int main(int argc, char *argv[]) {
         usleep(launch_interval * 1000); // Convert milliseconds to microseconds
     }
 
-    // Wait for all remaining child processes to complete
+    // Wait for all child processes to complete
     while (active_processes > 0) {
-        pid_t pid = waitpid(-1, NULL, 0);
-        if (pid > 0) {
-            active_processes--;
-            printf("OSS: Process %d finished\n", pid);
+        finished_pid = wait(NULL);
+        active_processes--;
+
+        // Capture end time in the process table
+        for (int i = 0; i < num_processes; i++) {
+            if (process_table[i].pid == finished_pid) {
+                process_table[i].end_seconds = shm_clock[0];
+                process_table[i].end_nanoseconds = shm_clock[1];
+                process_table[i].status = 1; // Mark as completed
+
+                printf("OSS: Process %d finished at clock: %d seconds, %d nanoseconds\n",
+                       finished_pid, process_table[i].end_seconds, process_table[i].end_nanoseconds);
+                break;
+            }
         }
+    }
+
+    // Print the process table for verification
+    printf("\nProcess Table:\n");
+    printf("%-10s %-20s %-20s %-10s\n", "PID", "Start Time (s:nanoseconds)", "End Time (s:nanoseconds)", "Status");
+
+    for (int i = 0; i < num_processes; i++) {
+        printf("%-10d %d:%-15d %d:%-15d %-10d\n",
+               process_table[i].pid,
+               process_table[i].start_seconds, process_table[i].start_nanoseconds,
+               process_table[i].end_seconds, process_table[i].end_nanoseconds,
+               process_table[i].status);
     }
 
     // Detach and destroy shared memory
