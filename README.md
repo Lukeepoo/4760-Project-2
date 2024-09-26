@@ -29,10 +29,15 @@ You can customize the behavior of oss using command-line arguments. The options 
 Usage: ./oss [-h] [-n num_processes] [-s num_simultaneous] [-t time_limit] [-i launch_interval]
 
 Options:
+
 -h                     Display this help message
+
 -n num_processes       Set the number of worker processes to fork (default: 5)
+
 -s num_simultaneous    Set the number of simultaneous processes allowed (default: 2)
+
 -t time_limit          Set the maximum time limit for child processes in seconds (default: 100)
+
 -i launch_interval     Set the interval (in milliseconds) between launching child processes (default: 1000)
 
 
