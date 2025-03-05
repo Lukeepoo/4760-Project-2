@@ -1,0 +1,37 @@
+# README
+
+## CMP SCI 4760 Project 2
+
+### Compilation
+To compile the project, run:
+```
+make
+```
+
+### Running the Program
+To run oss:
+```
+./oss [-n num_proc] [-s simul_proc] [-t max_time] [-i interval]
+```
+Example:
+```
+./oss -n 5 -s 2 -t 7 -i 100
+```
+
+This will launch up to 5 worker processes, with 2 running simultaneously. Each worker will run for a random duration between 1 and 7 seconds in simulated time. A new worker is launched at least every 100 milliseconds of simulated time.
+
+### Expected Output
+- `oss` will maintain a simulated system clock and periodically print the process table.
+- `worker` will print periodic messages while running and terminate when its allocated time expires.
+
+### Cleanup
+To remove compiled files, run:
+```
+make clean
+```
+
+### Known Issues
+- None at the moment.
+
+### Version Control
+This project is maintained using Git.

@@ -1,188 +1,139 @@
-/*
- * OSS - Main control program
- * Written by: Lucas Lovellette
- * Written on: 09/16/2024
- */
-
+/* Updated oss.c */
+#include "shared_memory.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <sys/ipc.h>
-#include <sys/shm.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <getopt.h>
 
-// Struct for process table entries
-typedef struct {
-    pid_t pid;
-    int start_seconds;
-    int start_nanoseconds;
-    int end_seconds;
-    int end_nanoseconds;
+#define DEFAULT_N 5
+#define DEFAULT_S 2
+#define DEFAULT_T 5
+#define DEFAULT_I 100
+
+int shmid;
+SimClock* systemClock;
+PCB processTable[MAX_PROCESSES];
+
+void incrementClock(SimClock* clock) {
+    clock->nanoseconds += 1000000; // Increment by 1ms
+    if (clock->nanoseconds >= 1000000000) {
+        clock->seconds++;
+        clock->nanoseconds -= 1000000000;
+    }
+}
+
+void checkChildren() {
     int status;
-} ProcessTableEntry;
+    pid_t pid;
+    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+        for (int i = 0; i < MAX_PROCESSES; i++) {
+            if (processTable[i].pid == pid) {
+                processTable[i].occupied = false;
+                printf("Process %d terminated\n", pid);
+                break;
+            }
+        }
+    }
+}
 
-// Function prototypes
-void print_usage(const char *program_name);
+int countActiveWorkers() {
+    int active = 0;
+    for (int j = 0; j < MAX_PROCESSES; j++) {
+        if (processTable[j].occupied) {
+            active++;
+        }
+    }
+    return active;
+}
 
-int main(int argc, char *argv[]) {
-    // Default values for command-line arguments
-    int num_processes = 5;      // -n option
-    int num_simultaneous = 2;   // -s option
-    int time_limit = 100;       // -t option in seconds
-    int launch_interval = 1000; // -i option in milliseconds
-
-    int opt;
-
-    // Parsing command-line arguments using getopt
-    while ((opt = getopt(argc, argv, "hn:s:t:i:")) != -1) {
-        switch (opt) {
+int main(int argc, char* argv[]) {
+    int n = DEFAULT_N, s = DEFAULT_S, t = DEFAULT_T, i = DEFAULT_I;
+    int option;
+    while ((option = getopt(argc, argv, "hn:s:t:i:")) != -1) {
+        switch (option) {
             case 'h':
-                print_usage(argv[0]);
+                printf("Usage: ./oss [-n num_proc] [-s simul_proc] [-t max_time] [-i interval]\n");
                 return 0;
             case 'n':
-                num_processes = atoi(optarg);
+                n = atoi(optarg);
                 break;
             case 's':
-                num_simultaneous = atoi(optarg);
+                s = atoi(optarg);
                 break;
             case 't':
-                time_limit = atoi(optarg);
+                t = atoi(optarg);
                 break;
             case 'i':
-                launch_interval = atoi(optarg);
+                i = atoi(optarg);
                 break;
             default:
-                print_usage(argv[0]);
+                fprintf(stderr, "Invalid option\n");
                 return 1;
         }
     }
 
-    // Print the parsed values for debugging
-    printf("Number of processes: %d\n", num_processes);
-    printf("Number of simultaneous processes: %d\n", num_simultaneous);
-    printf("Time limit for child processes: %d seconds\n", time_limit);
-    printf("Interval to launch children: %d milliseconds\n", launch_interval);
+    shmid = create_shared_memory(sizeof(SimClock));
+    systemClock = (SimClock*) attach_shared_memory(shmid);
+    systemClock->seconds = 0;
+    systemClock->nanoseconds = 0;
 
-    // Shared memory setup
-    key_t key = ftok("shmfile", 65);
-    int shmid = shmget(key, 2 * sizeof(int), 0666 | IPC_CREAT);
-    if (shmid == -1) {
-        perror("shmget failed");
-        exit(1);
-    }
-    int *shm_clock = (int *)shmat(shmid, (void *)0, 0);
-    if (shm_clock == (void *)-1) {
-        perror("shmat failed");
-        exit(1);
+    for (int j = 0; j < MAX_PROCESSES; j++) {
+        processTable[j].occupied = false;
     }
 
-    // Initialize the simulated system clock
-    shm_clock[0] = 0; // Seconds
-    shm_clock[1] = 0; // Nanoseconds
+    int launched = 0;
+    while (launched < n) {
+        checkChildren();  // Check for terminated children
 
-    // Process table setup
-    ProcessTableEntry process_table[num_processes];
+        int activeProcesses = countActiveWorkers();
 
-    // Process management variables
-    int active_processes = 0; // Tracks the number of active child processes
-    pid_t finished_pid;
-
-    // Launching child processes
-    for (int i = 0; i < num_processes; i++) {
-        if (active_processes >= num_simultaneous) {
-            // Wait for any child process to finish before launching another
-            finished_pid = wait(NULL);
-            active_processes--;
-
-            // Capture end time in the process table
-            for (int j = 0; j < num_processes; j++) {
-                if (process_table[j].pid == finished_pid) {
-                    process_table[j].end_seconds = shm_clock[0];  // Record seconds
-                    process_table[j].end_nanoseconds = shm_clock[1];  // Record nanoseconds
-                    process_table[j].status = 1;  // Mark as completed
-
-                    printf("OSS: Process %d finished at clock: %d seconds, %d nanoseconds\n",
-                           finished_pid, process_table[j].end_seconds, process_table[j].end_nanoseconds);
-                    break;
+        // Launch new process if within limit
+        if (activeProcesses < s && launched < n) {
+            pid_t pid = fork();
+            if (pid == 0) {
+                char sec[10], nano[10];
+                sprintf(sec, "%d", rand() % t + 1);
+                sprintf(nano, "%d", rand() % 1000000000);
+                execl("./worker", "worker", sec, nano, NULL);
+                perror("execl failed");
+                exit(EXIT_FAILURE);
+            } else if (pid > 0) {
+                for (int j = 0; j < MAX_PROCESSES; j++) {
+                    if (!processTable[j].occupied) {
+                        processTable[j].occupied = true;
+                        processTable[j].pid = pid;
+                        processTable[j].startSeconds = systemClock->seconds;
+                        processTable[j].startNano = systemClock->nanoseconds;
+                        break;
+                    }
                 }
+                launched++;
             }
         }
 
-        // Fork a new process
-        pid_t pid = fork();
-        if (pid < 0) {
-            perror("Fork failed");
-            exit(1);
-        } else if (pid == 0) {
-            // Child process: Run the worker
-            execl("./worker", "worker", NULL);
-            perror("execl failed");
-            exit(1);
-        } else {
-            // Parent process: Record start time and increment active process count
-            process_table[i].pid = pid;
-            process_table[i].start_seconds = shm_clock[0];
-            process_table[i].start_nanoseconds = shm_clock[1];
-            process_table[i].status = 0; // Mark as in progress
-
-            printf("OSS: Forked worker process with PID %d at clock: %d seconds, %d nanoseconds\n",
-                   pid, process_table[i].start_seconds, process_table[i].start_nanoseconds);
-            active_processes++;
-        }
-
-        // Simulate time passage (launch interval)
-        usleep(launch_interval * 1000); // Convert milliseconds to microseconds
-    }
-
-    // Wait for all child processes to complete
-    while (active_processes > 0) {
-        finished_pid = wait(NULL);
-        active_processes--;
-
-        // Capture end time in the process table
-        for (int i = 0; i < num_processes; i++) {
-            if (process_table[i].pid == finished_pid) {
-                process_table[i].end_seconds = shm_clock[0];
-                process_table[i].end_nanoseconds = shm_clock[1];
-                process_table[i].status = 1; // Mark as completed
-
-                printf("OSS: Process %d finished at clock: %d seconds, %d nanoseconds\n",
-                       finished_pid, process_table[i].end_seconds, process_table[i].end_nanoseconds);
-                break;
-            }
+        int prevNano = systemClock->nanoseconds;
+        int prevSeconds = systemClock->seconds;
+        while ((systemClock->seconds == prevSeconds &&
+               (systemClock->nanoseconds - prevNano) < (i * 1000000)) ||
+              (systemClock->seconds == prevSeconds + 1 &&
+               (systemClock->nanoseconds + (1000000000 - prevNano)) < (i * 1000000))) {
+            incrementClock(systemClock);
+            checkChildren();
         }
     }
 
-    // Print the process table for verification
-    printf("\nProcess Table:\n");
-    printf("%-10s %-20s %-20s %-10s\n", "PID", "Start Time (s:nanoseconds)", "End Time (s:nanoseconds)", "Status");
-
-    for (int i = 0; i < num_processes; i++) {
-        printf("%-10d %d:%-15d %d:%-15d %-10d\n",
-               process_table[i].pid,
-               process_table[i].start_seconds, process_table[i].start_nanoseconds,
-               process_table[i].end_seconds, process_table[i].end_nanoseconds,
-               process_table[i].status);
+    // **Wait for all remaining workers before removing shared memory**
+    printf("OSS: Waiting for all workers to exit before cleaning up...\n");
+    while (countActiveWorkers() > 0) {
+        checkChildren();
+        sleep(1);  // Give time for processes to finish
     }
 
-    // Detach and destroy shared memory
-    if (shmdt(shm_clock) == -1) {
-        perror("shmdt failed");
-    }
-    if (shmctl(shmid, IPC_RMID, NULL) == -1) {
-        perror("shmctl failed");
-    }
+    // **Now it's safe to remove shared memory**
+    destroy_shared_memory(shmid);
+    printf("OSS: Shared memory removed. Exiting cleanly.\n");
 
     return 0;
-}
-
-// Function to print usage instructions
-void print_usage(const char *program_name) {
-    printf("Usage: %s [-h] [-n num_processes] [-s num_simultaneous] [-t time_limit] [-i launch_interval]\n", program_name);
-    printf("  -h                 Display this help message\n");
-    printf("  -n num_processes   Set the number of processes (default: 5)\n");
-    printf("  -s num_simultaneous Set the number of simultaneous processes (default: 2)\n");
-    printf("  -t time_limit      Set the time limit for child processes in seconds (default: 100)\n");
-    printf("  -i launch_interval Set the interval to launch children in milliseconds (default: 1000)\n");
 }
